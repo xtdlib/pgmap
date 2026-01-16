@@ -71,7 +71,10 @@ func TryNew[K comparable, V any](tableName string, opts ...Option) (*Map[K, V], 
 	dsn := cfg.dsn
 	if dsn == "" && os.Getenv("PGMAP_DSN") != "" {
 		dsn = os.Getenv("PGMAP_DSN")
+	} else if dsn == "" && os.Getenv("PGKV_DSN") != "" {
+		dsn = os.Getenv("PGKV_DSN")
 	}
+
 	if dsn == "" {
 		dsn = "postgres://postgres:postgres@localhost:5432/postgres"
 	}
@@ -1242,7 +1245,7 @@ func (kv *base[K, V]) KeysBackward(yield func(K) bool) {
 	}
 }
 
-// All iterates over all key-value pairs in forward order
+// All iterates over all key-value pairs in forward order (streaming, one row at a time)
 func (kv *base[K, V]) All(yield func(K, V) bool) {
 	query := `SELECT key, value FROM ` + kv.tableName + ` WHERE (expires_at IS NULL OR expires_at > NOW()) ORDER BY key`
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*60)
@@ -1253,12 +1256,7 @@ func (kv *base[K, V]) All(yield func(K, V) bool) {
 	}
 	defer rows.Close()
 
-	type kvPair struct {
-		key   K
-		value V
-	}
-
-	pairs, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (kvPair, error) {
+	for rows.Next() {
 		var key K
 		var value V
 
@@ -1266,61 +1264,62 @@ func (kv *base[K, V]) All(yield func(K, V) bool) {
 		valTarget, getVal := newScanTarget[V]()
 
 		if kv.keyNeedsMarshal && kv.valueNeedsMarshal {
-			// Both need unmarshaling
 			var keyStr, valueStr string
-			if err := row.Scan(&keyStr, &valueStr); err != nil {
-				return kvPair{}, err
+			if err := rows.Scan(&keyStr, &valueStr); err != nil {
+				panic(err)
 			}
 			if err := unmarshal(keyStr, keyTarget); err != nil {
-				return kvPair{}, err
+				panic(err)
 			}
 			if err := unmarshal(valueStr, valTarget); err != nil {
-				return kvPair{}, err
+				panic(err)
 			}
 			key = getKey()
 			value = getVal()
 		} else if kv.keyNeedsMarshal && !kv.valueNeedsMarshal {
-			// Key needs unmarshaling, value is native
 			var keyStr string
-			if err := row.Scan(&keyStr, valTarget); err != nil {
-				return kvPair{}, err
+			if err := rows.Scan(&keyStr, valTarget); err != nil {
+				panic(err)
 			}
 			if err := unmarshal(keyStr, keyTarget); err != nil {
-				return kvPair{}, err
+				panic(err)
 			}
 			key = getKey()
 			value = getVal()
 		} else if !kv.keyNeedsMarshal && kv.valueNeedsMarshal {
-			// Key is native, value needs unmarshaling
 			var valueStr string
-			if err := row.Scan(keyTarget, &valueStr); err != nil {
-				return kvPair{}, err
+			if err := rows.Scan(keyTarget, &valueStr); err != nil {
+				panic(err)
 			}
 			if err := unmarshal(valueStr, valTarget); err != nil {
-				return kvPair{}, err
+				panic(err)
 			}
 			key = getKey()
 			value = getVal()
 		} else {
-			// Both are native
-			if err := row.Scan(keyTarget, valTarget); err != nil {
-				return kvPair{}, err
+			if err := rows.Scan(keyTarget, valTarget); err != nil {
+				panic(err)
 			}
 			key = getKey()
 			value = getVal()
 		}
 
-		return kvPair{key: key, value: value}, nil
-	})
-	if err != nil {
-		panic(err)
-	}
-
-	for _, pair := range pairs {
-		if !yield(pair.key, pair.value) {
+		if !yield(key, value) {
 			return
 		}
 	}
+	if rows.Err() != nil {
+		panic(rows.Err())
+	}
+}
+
+// Map returns all key-value pairs as a Go map
+func (kv *base[K, V]) Map() map[K]V {
+	m := make(map[K]V)
+	for k, v := range kv.All {
+		m[k] = v
+	}
+	return m
 }
 
 // KeysWhere returns an iterator over keys matching the WHERE clause in forward order
