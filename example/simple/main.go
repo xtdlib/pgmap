@@ -8,8 +8,8 @@ import (
 )
 
 func main() {
-	kv := pgmap.New[string, *rat.Rational]("samplxxxxxx")
-	kv.Set("wer", rat.Rat(0))
-	log.Println(kv.Get("wer"))
+	kv := pgmap.New[*rat.Rational, *rat.Rational]("sellbook2", pgmap.DSN("postgres://postgres:postgres@oci-aca-001:5432/postgres"))
+	kv.Set(rat.Rat(1), rat.Rat(0))
+	log.Println(kv.Get(rat.Rat(1)))
 	kv.Purge()
 }
