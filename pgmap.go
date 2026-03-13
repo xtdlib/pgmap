@@ -206,7 +206,9 @@ func detectColType(v any) colType {
 	scannerType := reflect.TypeOf((*sql.Scanner)(nil)).Elem()
 	stringerType := reflect.TypeOf((*fmt.Stringer)(nil)).Elem()
 	ptrType := reflect.PointerTo(t)
-	if ptrType.Implements(scannerType) && (t.Implements(stringerType) || ptrType.Implements(stringerType)) {
+	implementsScanner := t.Implements(scannerType) || ptrType.Implements(scannerType)
+	implementsStringer := t.Implements(stringerType) || ptrType.Implements(stringerType)
+	if implementsScanner && implementsStringer {
 		return colType{pgType: "TEXT", needsMarshal: true, isScanner: true, goType: t}
 	}
 	return colType{pgType: "JSON", needsMarshal: true, goType: t}
@@ -418,6 +420,10 @@ func (b *base[K, V]) marshalKey(key K) any {
 		return key
 	}
 	if b.keyType.isScanner {
+		rv := reflect.ValueOf(key)
+		if rv.Kind() == reflect.Ptr && rv.IsNil() {
+			return ""
+		}
 		if s, ok := any(key).(fmt.Stringer); ok {
 			return s.String()
 		}
@@ -442,6 +448,10 @@ func (b *base[K, V]) marshalValue(value V) any {
 		return value
 	}
 	if b.valType.isScanner {
+		rv := reflect.ValueOf(value)
+		if rv.Kind() == reflect.Ptr && rv.IsNil() {
+			return ""
+		}
 		if s, ok := any(value).(fmt.Stringer); ok {
 			return s.String()
 		}
@@ -462,13 +472,7 @@ func (b *base[K, V]) unmarshalKey(src any) (K, error) {
 		if !ok {
 			return zero, fmt.Errorf("expected string for scanner type")
 		}
-		ptr := reflect.New(b.keyType.goType)
-		if scanner, ok := ptr.Interface().(sql.Scanner); ok {
-			if err := scanner.Scan(s); err != nil {
-				return zero, err
-			}
-			return ptr.Elem().Interface().(K), nil
-		}
+		return scanInto[K](b.keyType.goType, s)
 	}
 	var data []byte
 	switch v := src.(type) {
@@ -497,13 +501,7 @@ func (b *base[K, V]) unmarshalValue(src any) (V, error) {
 		if !ok {
 			return zero, fmt.Errorf("expected string for scanner type")
 		}
-		ptr := reflect.New(b.valType.goType)
-		if scanner, ok := ptr.Interface().(sql.Scanner); ok {
-			if err := scanner.Scan(s); err != nil {
-				return zero, err
-			}
-			return ptr.Elem().Interface().(V), nil
-		}
+		return scanInto[V](b.valType.goType, s)
 	}
 	var data []byte
 	switch v := src.(type) {
@@ -524,6 +522,32 @@ func (b *base[K, V]) unmarshalValue(src any) (V, error) {
 		return zero, err
 	}
 	return result, nil
+}
+
+// scanInto creates a new instance of goType, calls Scan(s) on it, and returns as T.
+// Handles both pointer types (e.g. *rat.Rational) and non-pointer types.
+func scanInto[T any](goType reflect.Type, s string) (T, error) {
+	var zero T
+	if goType.Kind() == reflect.Ptr {
+		// e.g. *rat.Rational: New(Elem) gives *rat.Rational which implements Scanner
+		ptr := reflect.New(goType.Elem())
+		if scanner, ok := ptr.Interface().(sql.Scanner); ok {
+			if err := scanner.Scan(s); err != nil {
+				return zero, err
+			}
+			return ptr.Interface().(T), nil
+		}
+	} else {
+		// e.g. rat.Rational: New(goType) gives *rat.Rational which implements Scanner
+		ptr := reflect.New(goType)
+		if scanner, ok := ptr.Interface().(sql.Scanner); ok {
+			if err := scanner.Scan(s); err != nil {
+				return zero, err
+			}
+			return ptr.Elem().Interface().(T), nil
+		}
+	}
+	return zero, fmt.Errorf("type %v does not implement sql.Scanner", goType)
 }
 
 var timeType = reflect.TypeOf(time.Time{})
