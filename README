@@ -1,0 +1,43 @@
+pgmap - PostgreSQL-backed generic key-value store for Go
+
+  go get github.com/xtdlib/pgmap
+
+Usage:
+
+  m := pgmap.New[string, string]("my-table")
+  m.Set("key", "value")
+  v := m.Get("key")
+
+Options:
+
+  pgmap.DSN("postgres://...")    custom connection string
+  pgmap.SyncCommit()             enable WAL flush (default: async)
+  pgmap.Unlogged()               unlogged table (fast, no crash safety)
+  pgmap.MinConns(n)              minimum idle pool connections (default: 3)
+
+Auto-detects unix sockets before falling back to TCP.
+
+Operations:
+
+  Set, Get, GetOr, Has, Delete, Clear, Purge
+  SetNX (set if not exists)
+  SetNZ (set if non-zero)
+  Update (atomic read-modify-write)
+  AddRat (atomic rational number addition)
+  WithLock (table-level locking with transactions)
+  Keys, KeysBackward, All, KeysWhere, AllWhere, Map
+
+Every operation has a Try* variant that returns errors instead of panicking.
+
+Type mapping:
+
+  string          -> TEXT
+  int, uint, etc  -> BIGINT
+  float32/64      -> DOUBLE PRECISION
+  bool            -> BOOLEAN
+  []byte          -> BYTEA
+  time.Time       -> BIGINT (UnixNano)
+  Scanner+Stringer-> TEXT
+  everything else -> JSON
+
+Requires Go 1.24+, PostgreSQL.
